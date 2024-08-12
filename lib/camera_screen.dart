@@ -1,106 +1,122 @@
+import 'dart:async';
+
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:tflite/tflite.dart';
-import 'package:http/http.dart' as http;
-import 'dart:io';
-import 'package:flutter_tts/flutter_tts.dart';
-import 'package:path/path.dart' as path;
+import 'package:google_generative_ai/google_generative_ai.dart';
 
 class CameraScreen extends StatefulWidget {
-  const CameraScreen({super.key});
+  final CameraDescription camera;
+
+  const CameraScreen({super.key, required this.camera});
 
   @override
   _CameraScreenState createState() => _CameraScreenState();
 }
 
 class _CameraScreenState extends State<CameraScreen> {
-  CameraController? _controller;
-  List<CameraDescription>? cameras;
-  bool isCameraInitialized = false;
-  FlutterTts flutterTts = FlutterTts();
+  late CameraController _controller;
+  late Future<void> _initializeControllerFuture;
+
+  final model = GenerativeModel(
+    model: 'gemini-1.5-pro',
+    apiKey: "AIzaSyDHRCG6Ig1LIn28lfRljDrdNZIHvF5a908",
+  );
+
+  String res = "";
 
   @override
   void initState() {
     super.initState();
-    initializeCamera();
-    loadModel();
+    _controller = CameraController(
+      widget.camera,
+      ResolutionPreset.high,
+    );
+    _initializeControllerFuture = _controller.initialize();
+
+    // loadit();
+    gobro();
   }
 
-  void initializeCamera() async {
-    cameras = await availableCameras();
-    _controller = CameraController(cameras![1], ResolutionPreset.high);
-    await _controller?.initialize();
-    setState(() {
-      isCameraInitialized = true;
+  gobro() {
+    Timer.periodic(const Duration(seconds: 15), (timer) {
+      print(timer.tick);
+
+      loadit();
     });
   }
 
-  void loadModel() async {
-    await Tflite.loadModel(
-      model: "assets/yolov3.tflite",
-      labels: "assets/yolov3.txt",
-    );
+  loadit() async {
+    // const prompt = 'describe this picture';
+    final prompt = TextPart("Describe this picture");
+
+    // final content = [Content.text(prompt)];
+    // final response = await model.generateContent(content);
+    // try {
+    await _initializeControllerFuture;
+    final image = await _controller.takePicture();
+
+    final imageParts = [
+      DataPart('image/jpeg', await image.readAsBytes()),
+    ];
+    final response = await model.generateContent([
+      Content.multi([prompt, ...imageParts])
+    ]);
+    print("----------> response");
+    print(response.text);
+    setState(() {
+      res = response.text ?? "";
+    });
   }
 
   @override
   void dispose() {
-    _controller?.dispose();
-    Tflite.close();
-    flutterTts.stop();
+    _controller.dispose();
     super.dispose();
-  }
-
-  void detectObject(File imageFile) async {
-    var recognitions = await Tflite.detectObjectOnImage(
-      path: imageFile.path,
-      model: "YOLO",
-      threshold: 0.5,
-      imageMean: 0.0,
-      imageStd: 255.0,
-    );
-
-    if ((recognitions ?? []).isNotEmpty) {
-      // Upload the detected object image and interact with the Generative AI service
-      String detectedObjectPath = imageFile.path;
-      var request = http.MultipartRequest(
-        'POST',
-        Uri.parse('https://api.gemini.com/v1/detect'),
-      );
-      request.files.add(
-        await http.MultipartFile.fromPath(
-          'file',
-          detectedObjectPath,
-        ),
-      );
-      var res = await request.send();
-      var responseBody = await res.stream.bytesToString();
-
-      // Use the Gemini API to get information about the detected object
-      String detectedText = responseBody; // Parse the response as needed
-
-      // Convert the text to speech
-      await flutterTts.speak(detectedText);
-    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: isCameraInitialized
-          ? CameraPreview(_controller!)
-          : const Center(child: CircularProgressIndicator()),
+      appBar: AppBar(title: const Text('Take a picture')),
+      body: Stack(
+        children: [
+          FutureBuilder<void>(
+            future: _initializeControllerFuture,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.done) {
+                return CameraPreview(_controller);
+              } else {
+                return const Center(child: CircularProgressIndicator());
+              }
+            },
+          ),
+          res.isEmpty
+              ? const SizedBox()
+              : Container(
+                  width: 300,
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(20)),
+                  child: Text(
+                    res,
+                    style: const TextStyle(color: Colors.black),
+                  ),
+                )
+        ],
+      ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () async {
-          XFile picture = await _controller!.takePicture();
-          final directory = await getApplicationDocumentsDirectory();
-          final imagePath = path.join(directory.path, picture.name);
-          final File imageFile = File(imagePath);
-          await picture.saveTo(imagePath);
-
-          detectObject(imageFile);
-        },
         child: const Icon(Icons.camera_alt),
+        onPressed: () async {
+          // try {
+          //   await _initializeControllerFuture;
+          //   final image = await _controller.takePicture();
+          //   // Handle the captured image
+          // } catch (e) {
+          //   print(e);
+          // }
+          loadit();
+        },
       ),
     );
   }
